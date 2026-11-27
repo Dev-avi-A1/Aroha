@@ -2,7 +2,7 @@ import express from 'express';
 import { createServer } from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { and, asc, desc, eq } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from './src/db/index.ts';
 import {
@@ -24,7 +24,7 @@ import {
 import { getFullWorkspaceState, recomputeHabitStreakInDb } from './src/db/workspace.ts';
 import { requireAuth, type AuthRequest } from './src/middleware/auth.ts';
 import { generateCoachReply } from './src/lib/gemini.ts';
-import { formatDateISO } from './src/lib/presets.ts';
+import { formatDateISO, shiftDateISO } from './src/lib/presets.ts';
 import { normalizeEmail, validateEmailAddress } from './src/lib/email-guard.ts';
 import {
   applyPenaltyLockout,
@@ -424,16 +424,68 @@ app.delete('/api/schedule/blocks/:id', requireAuth, async (req: AuthRequest, res
 });
 
 app.post('/api/schedule/apply-template', requireAuth, async (req: AuthRequest, res) => {
+  const dateStringSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
   const schema = z.object({
-    date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    date: dateStringSchema.optional(),
+    dates: z.array(dateStringSchema).min(1).max(100).optional(),
+    startDate: dateStringSchema.optional(),
+    endDate: dateStringSchema.optional(),
+    weekdays: z.array(z.number().int().min(0).max(6)).min(1).max(7).optional(),
     templateId: z.number().int(),
     replaceExisting: z.boolean().default(true),
+    skipPopulatedDays: z.boolean().default(false),
   });
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: 'Invalid apply-template request.' });
     return;
   }
+
+  // Build deduplicated, sorted target dates (capped at 100 days per operation)
+  const targetSet = new Set<string>();
+  if (parsed.data.date) {
+    targetSet.add(parsed.data.date);
+  }
+  if (parsed.data.dates) {
+    for (const d of parsed.data.dates) {
+      targetSet.add(d);
+    }
+  }
+  if (parsed.data.startDate && parsed.data.endDate) {
+    const start = parsed.data.startDate;
+    const end = parsed.data.endDate;
+    if (start > end) {
+      res.status(400).json({ error: 'Start date must be on or before end date.' });
+      return;
+    }
+    const allowedDays = parsed.data.weekdays ? new Set(parsed.data.weekdays) : null;
+    let cursor = start;
+    let safetyDays = 0;
+    while (cursor <= end && safetyDays < 105) {
+      const [y, m, d] = cursor.split('-').map(Number);
+      const dow = new Date(Date.UTC(y, m - 1, d)).getUTCDay();
+      if (!allowedDays || allowedDays.has(dow)) {
+        targetSet.add(cursor);
+      }
+      cursor = shiftDateISO(cursor, 1);
+      safetyDays += 1;
+    }
+    if (safetyDays >= 105 && cursor <= end) {
+      res.status(400).json({ error: 'Date range cannot exceed 100 days per apply action.' });
+      return;
+    }
+  }
+
+  const targetDates = Array.from(targetSet).sort();
+  if (targetDates.length === 0) {
+    res.status(400).json({ error: 'No matching dates selected.' });
+    return;
+  }
+  if (targetDates.length > 100) {
+    res.status(400).json({ error: 'Cannot apply template to more than 100 dates at once.' });
+    return;
+  }
+
   try {
     const [tpl] = await db
       .select()
@@ -452,34 +504,49 @@ app.post('/api/schedule/apply-template', requireAuth, async (req: AuthRequest, r
       color: string;
     }>;
 
+    let finalDates = targetDates;
+
     if (parsed.data.replaceExisting) {
       await db
         .delete(scheduleBlocks)
-        .where(and(eq(scheduleBlocks.userId, req.dbUserId!), eq(scheduleBlocks.date, parsed.data.date)));
+        .where(and(eq(scheduleBlocks.userId, req.dbUserId!), inArray(scheduleBlocks.date, targetDates)));
+    } else if (parsed.data.skipPopulatedDays) {
+      const populatedRows = await db
+        .select({ date: scheduleBlocks.date })
+        .from(scheduleBlocks)
+        .where(and(eq(scheduleBlocks.userId, req.dbUserId!), inArray(scheduleBlocks.date, targetDates)));
+      const populatedSet = new Set(populatedRows.map((r) => r.date));
+      finalDates = targetDates.filter((d) => !populatedSet.has(d));
     }
 
-    if (items.length > 0) {
-      await db.insert(scheduleBlocks).values(
-        items.map((b, idx) => ({
-          userId: req.dbUserId!,
-          date: parsed.data.date,
-          startTime: b.startTime,
-          endTime: b.endTime,
-          title: b.title,
-          priority: b.priority || 'medium',
-          color: b.color || 'primary',
-          completed: false,
-          sortOrder: idx,
-        }))
-      );
+    const rowsToInsert =
+      items.length > 0 && finalDates.length > 0
+        ? finalDates.flatMap((targetDate) =>
+            items.map((b, idx) => ({
+              userId: req.dbUserId!,
+              date: targetDate,
+              startTime: b.startTime,
+              endTime: b.endTime,
+              title: b.title,
+              priority: b.priority || 'medium',
+              color: b.color || 'primary',
+              completed: false,
+              sortOrder: idx,
+            }))
+          )
+        : [];
+
+    const CHUNK_SIZE = 500;
+    for (let i = 0; i < rowsToInsert.length; i += CHUNK_SIZE) {
+      await db.insert(scheduleBlocks).values(rowsToInsert.slice(i, i + CHUNK_SIZE));
     }
 
-    const updatedBlocks = await db
-      .select()
-      .from(scheduleBlocks)
-      .where(and(eq(scheduleBlocks.userId, req.dbUserId!), eq(scheduleBlocks.date, parsed.data.date)))
-      .orderBy(asc(scheduleBlocks.startTime), asc(scheduleBlocks.sortOrder));
-    res.json(updatedBlocks);
+    res.json({
+      appliedDatesCount: finalDates.length,
+      skippedDatesCount: targetDates.length - finalDates.length,
+      insertedBlocksCount: rowsToInsert.length,
+      dates: finalDates,
+    });
   } catch (error) {
     console.error('POST /api/schedule/apply-template failed:', error);
     res.status(500).json({ error: 'Failed to apply schedule template.' });

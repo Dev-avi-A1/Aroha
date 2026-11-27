@@ -86,7 +86,7 @@ export const BADGE_DEFINITIONS: BadgeDefinition[] = [
 ];
 
 export const RANK_LADDER = [
-  { name: 'Novice', minLevel: 1, maxLevel: 4, directive: 'Establish baseline routine and daily friction control.' },
+  { name: 'Novice', minLevel: 0, maxLevel: 4, directive: 'Establish baseline routine and daily friction control.' },
   { name: 'Apprentice', minLevel: 5, maxLevel: 9, directive: 'Stabilize streaks and eliminate unscheduled drift.' },
   { name: 'Practitioner', minLevel: 10, maxLevel: 14, directive: 'Sustain multi-hour deep work with biological recovery.' },
   { name: 'Elite', minLevel: 15, maxLevel: 19, directive: 'Execute high-priority blocks under pressure with precision.' },
@@ -100,9 +100,9 @@ export function getRankForLevel(level: number): string {
 }
 
 export function xpThresholdForLevel(level: number): number {
-  if (level <= 1) return 0;
-  // Progressive tactical curve: 180 XP base scaling gently per level
-  return Math.round(140 * (level - 1) + 40 * Math.pow(level - 1, 1.35));
+  if (level <= 0) return 0;
+  // Level 0 starts at 0 XP; Level 1 unlocks at 100 XP with progressive scaling thereafter
+  return Math.round(80 * level + 20 * Math.pow(level, 1.45));
 }
 
 export function computeXpBreakdown(input: XpInput): XpBreakdown {
@@ -129,7 +129,7 @@ export function computeXpBreakdown(input: XpInput): XpBreakdown {
     components.goalsXp +
     components.disciplineXp;
 
-  let level = 1;
+  let level = 0;
   while (xpThresholdForLevel(level + 1) <= totalXp && level < 100) {
     level += 1;
   }
@@ -164,11 +164,11 @@ export function computeDisciplineScore(params: {
   const blockRatio =
     params.totalBlocksToday > 0
       ? params.completedBlocksToday / params.totalBlocksToday
-      : 0.5;
+      : 0;
   const habitRatio =
     params.activeHabitsCount > 0
       ? Math.min(1, params.habitCheckinsToday / params.activeHabitsCount)
-      : 0.5;
+      : 0;
   const focusRatio = Math.min(1, params.focusMinutesToday / 100);
   const healthRatio =
     (Math.min(1, params.waterMlToday / 3000) + Math.min(1, params.sleepHoursToday / 8)) / 2;

@@ -8,18 +8,26 @@ declare global {
 
 function isTransientDisconnect(err: unknown): boolean {
   if (!err || typeof err !== 'object') return false;
-  const e = err as { message?: string; code?: string };
+  const e = err as { message?: string; code?: string; cause?: unknown };
   const msg = e.message || '';
   const code = e.code || '';
-  return (
+  if (
     msg.includes('Connection terminated unexpectedly') ||
     msg.includes('Connection terminated') ||
     msg.includes('Client has encountered a connection error') ||
+    code === 'ENOENT' ||
+    code === 'ECONNREFUSED' ||
     code === 'ECONNRESET' ||
     code === 'EPIPE' ||
     code === 'ETIMEDOUT' ||
     code === '57P01'
-  );
+  ) {
+    return true;
+  }
+  if (e.cause && e.cause !== err) {
+    return isTransientDisconnect(e.cause);
+  }
+  return false;
 }
 
 export const createPool = () => {
@@ -47,20 +55,26 @@ export const createPool = () => {
       console.error('Unexpected SQL pool error:', err);
     });
 
-    // Retry transient scale-to-zero / idle socket drops once on promise-based queries
+    // Bounded exponential backoff with jitter (max 3 attempts) for transient proxy startup / scale-to-zero drops
     const rawQuery = pool.query.bind(pool) as (...args: unknown[]) => unknown;
     pool.query = ((...args: unknown[]) => {
       const hasCallback = typeof args[args.length - 1] === 'function';
       if (hasCallback) {
         return rawQuery(...args);
       }
-      return Promise.resolve(rawQuery(...args)).catch(async (err) => {
-        if (isTransientDisconnect(err)) {
-          await new Promise((r) => setTimeout(r, 250));
-          return rawQuery(...args);
+      const runWithRetry = async (attempt: number): Promise<unknown> => {
+        try {
+          return await Promise.resolve(rawQuery(...args));
+        } catch (err) {
+          if (attempt < 3 && isTransientDisconnect(err)) {
+            const delayMs = 500 * Math.pow(2, attempt) + Math.floor(Math.random() * 150);
+            await new Promise((r) => setTimeout(r, delayMs));
+            return runWithRetry(attempt + 1);
+          }
+          throw err;
         }
-        throw err;
-      });
+      };
+      return runWithRetry(0);
     }) as Pool['query'];
 
     global._postgresPool = pool;

@@ -223,6 +223,20 @@ interface WorkspaceContextValue {
   updateBlock: (id: number, patch: Partial<ScheduleBlock>) => Promise<void>;
   deleteBlock: (id: number) => Promise<void>;
   applyTemplate: (date: string, templateId: number, replaceExisting?: boolean) => Promise<void>;
+  applyTemplateBatch: (payload: {
+    templateId: number;
+    dates?: string[];
+    startDate?: string;
+    endDate?: string;
+    weekdays?: number[];
+    replaceExisting?: boolean;
+    skipPopulatedDays?: boolean;
+  }) => Promise<{
+    appliedDatesCount: number;
+    skippedDatesCount: number;
+    insertedBlocksCount: number;
+    dates: string[];
+  }>;
   saveTemplate: (payload: { id?: number; name: string; description: string; blocks: TemplateBlockItem[] }) => Promise<void>;
   deleteTemplate: (id: number) => Promise<void>;
   createHabit: (payload: Omit<HabitItem, 'id' | 'currentStreak' | 'bestStreak'>) => Promise<void>;
@@ -549,6 +563,33 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
             }),
           'Template applied to schedule'
         ),
+      applyTemplateBatch: async (payload) => {
+        try {
+          const result = await apiFetch<{
+            appliedDatesCount: number;
+            skippedDatesCount: number;
+            insertedBlocksCount: number;
+            dates: string[];
+          }>('/api/schedule/apply-template', {
+            method: 'POST',
+            body: JSON.stringify(payload),
+          });
+          await refreshWorkspace();
+          if (result.appliedDatesCount === 0) {
+            toast.info('All selected days already had blocks and were skipped.');
+          } else {
+            const skipNote = result.skippedDatesCount > 0 ? ` (${result.skippedDatesCount} skipped)` : '';
+            toast.success(
+              `Scheduled ${result.insertedBlocksCount} blocks across ${result.appliedDatesCount} day${result.appliedDatesCount === 1 ? '' : 's'}${skipNote}`
+            );
+          }
+          return result;
+        } catch (error: unknown) {
+          const msg = error instanceof Error ? error.message : 'Failed to apply schedule template.';
+          toast.error(msg);
+          throw error;
+        }
+      },
       saveTemplate: (payload) =>
         mutateAndRefresh(
           () =>
@@ -667,7 +708,7 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
       resetWorkspace: () =>
         mutateAndRefresh(
           () => apiFetch('/api/account/reset', { method: 'POST' }),
-          'Workspace reset to Monk Mode baseline'
+          'Workspace reset to clean Level 0 baseline'
         ),
     }),
     [

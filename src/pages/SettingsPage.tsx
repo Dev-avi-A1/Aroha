@@ -145,19 +145,19 @@ export function SettingsPage() {
       <div className="card-surface p-6 max-w-2xl space-y-3 border-destructive/40">
         <SectionHeader
           title="Workspace Reset"
-          subtitle="Clear all personal logs and restore the clean Monk Mode starter baseline"
+          subtitle="Clear all personal logs and restore a clean Level 0 starting baseline"
         />
         <AlertDialog>
           <AlertDialogTrigger asChild>
             <Button variant="destructive" size="sm">
-              <RotateCcw className="h-3.5 w-3.5" /> Reset to Monk Mode Baseline
+              <RotateCcw className="h-3.5 w-3.5" /> Reset to Clean Level 0
             </Button>
           </AlertDialogTrigger>
           <AlertDialogContent>
             <AlertDialogHeader>
               <AlertDialogTitle>Reset all AROHA workspace records?</AlertDialogTitle>
               <AlertDialogDescription>
-                This permanently deletes your schedule history, habit check-ins, focus sessions, journals, goals, and coach logs, then re-initializes the default Monk Mode starter kit.
+                This permanently deletes your schedule history, habit check-ins, focus sessions, journals, goals, and coach logs, returning your account to Level 0 (0 XP) with default schedule templates preserved.
               </AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>

@@ -21,17 +21,25 @@ export const requireAuth = async (
   }
 
   const token = authHeader.split('Bearer ')[1];
+  let decodedToken: DecodedIdToken;
   try {
-    const decodedToken = await adminAuth.verifyIdToken(token);
-    if (decodedToken.email && isDisposableEmail(decodedToken.email)) {
-      res.status(403).json({
-        error: 'Temporary or disposable email addresses are not permitted.',
-      });
-      return;
-    }
+    decodedToken = await adminAuth.verifyIdToken(token);
+  } catch (error) {
+    console.error('Error verifying Firebase ID token:', error);
+    res.status(401).json({ error: 'Unauthorized: Invalid or expired session token' });
+    return;
+  }
 
-    req.user = decodedToken;
+  if (decodedToken.email && isDisposableEmail(decodedToken.email)) {
+    res.status(403).json({
+      error: 'Temporary or disposable email addresses are not permitted.',
+    });
+    return;
+  }
 
+  req.user = decodedToken;
+
+  try {
     const dbUser = await getOrCreateUser(
       decodedToken.uid,
       decodedToken.email || '',
@@ -41,7 +49,7 @@ export const requireAuth = async (
     req.dbUserId = dbUser.id;
     next();
   } catch (error) {
-    console.error('Error verifying Firebase ID token:', error);
-    res.status(401).json({ error: 'Unauthorized: Invalid or expired session token' });
+    console.error('Database error initializing user workspace:', error);
+    res.status(503).json({ error: 'Workspace database is temporarily unavailable. Please retry in a moment.' });
   }
 };

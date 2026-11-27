@@ -1,11 +1,19 @@
-import React, { useState } from 'react';
-import { Copy, Edit3, Layers, Plus, Trash2 } from 'lucide-react';
+import React, { useMemo, useState } from 'react';
+import { CalendarRange, Copy, Edit3, Layers, Plus, Trash2, X } from 'lucide-react';
 import { useWorkspace, type ScheduleTemplate } from '@/context/WorkspaceContext';
-import type { TemplateBlockItem } from '@/lib/presets';
+import { shiftDateISO, type TemplateBlockItem } from '@/lib/presets';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -17,6 +25,395 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog';
+
+const WEEKDAY_OPTIONS = [
+  { value: 1, label: 'Mon' },
+  { value: 2, label: 'Tue' },
+  { value: 3, label: 'Wed' },
+  { value: 4, label: 'Thu' },
+  { value: 5, label: 'Fri' },
+  { value: 6, label: 'Sat' },
+  { value: 0, label: 'Sun' },
+] as const;
+
+type SpanMode = '1w' | '2w' | '1m' | '3m' | 'custom' | 'specific';
+type ConflictPolicy = 'replace' | 'skip' | 'append';
+
+function getUtcDayOfWeek(dateStr: string): number {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  return new Date(Date.UTC(y, m - 1, d)).getUTCDay();
+}
+
+export function MultiDateApplyDialog({
+  open,
+  onOpenChange,
+  template,
+  defaultStartDate,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  template: ScheduleTemplate | null;
+  defaultStartDate: string;
+}) {
+  const { applyTemplateBatch } = useWorkspace();
+  const [spanMode, setSpanMode] = useState<SpanMode>('1w');
+  const [startDate, setStartDate] = useState(defaultStartDate);
+  const [endDate, setEndDate] = useState(() => shiftDateISO(defaultStartDate, 6));
+  const [weekdays, setWeekdays] = useState<number[]>([0, 1, 2, 3, 4, 5, 6]);
+  const [specificDateInput, setSpecificDateInput] = useState(defaultStartDate);
+  const [pickedDates, setPickedDates] = useState<string[]>([defaultStartDate]);
+  const [conflictPolicy, setConflictPolicy] = useState<ConflictPolicy>('replace');
+  const [submitting, setSubmitting] = useState(false);
+
+  React.useEffect(() => {
+    if (open) {
+      setSpanMode('1w');
+      setStartDate(defaultStartDate);
+      setEndDate(shiftDateISO(defaultStartDate, 6));
+      setWeekdays([0, 1, 2, 3, 4, 5, 6]);
+      setSpecificDateInput(defaultStartDate);
+      setPickedDates([defaultStartDate]);
+      setConflictPolicy('replace');
+    }
+  }, [open, defaultStartDate]);
+
+  const templateBlockCount = useMemo(() => {
+    if (!template) return 0;
+    try {
+      return (JSON.parse(template.blocksJson) as unknown[]).length;
+    } catch {
+      return 0;
+    }
+  }, [template]);
+
+  const selectSpanPreset = (mode: SpanMode) => {
+    setSpanMode(mode);
+    if (mode === '1w') setEndDate(shiftDateISO(startDate, 6));
+    else if (mode === '2w') setEndDate(shiftDateISO(startDate, 13));
+    else if (mode === '1m') setEndDate(shiftDateISO(startDate, 29));
+    else if (mode === '3m') setEndDate(shiftDateISO(startDate, 89));
+  };
+
+  const handleStartDateChange = (nextStart: string) => {
+    if (!nextStart) return;
+    setStartDate(nextStart);
+    if (spanMode === '1w') setEndDate(shiftDateISO(nextStart, 6));
+    else if (spanMode === '2w') setEndDate(shiftDateISO(nextStart, 13));
+    else if (spanMode === '1m') setEndDate(shiftDateISO(nextStart, 29));
+    else if (spanMode === '3m') setEndDate(shiftDateISO(nextStart, 89));
+    else if (nextStart > endDate) setEndDate(nextStart);
+  };
+
+  const toggleWeekday = (dow: number) => {
+    setWeekdays((prev) =>
+      prev.includes(dow) ? prev.filter((d) => d !== dow) : [...prev, dow]
+    );
+  };
+
+  const handleAddPickedDate = () => {
+    if (!specificDateInput) return;
+    setPickedDates((prev) => {
+      if (prev.includes(specificDateInput) || prev.length >= 100) return prev;
+      return [...prev, specificDateInput].sort();
+    });
+  };
+
+  const { previewDates, rangeError } = useMemo(() => {
+    if (spanMode === 'specific') {
+      return { previewDates: [...pickedDates].sort(), rangeError: null as string | null };
+    }
+    if (!startDate || !endDate) {
+      return { previewDates: [] as string[], rangeError: 'Select both a start and end date.' };
+    }
+    if (startDate > endDate) {
+      return { previewDates: [] as string[], rangeError: 'Start date must be on or before end date.' };
+    }
+    const allowed = new Set(weekdays);
+    if (allowed.size === 0) {
+      return { previewDates: [] as string[], rangeError: 'Select at least one weekday.' };
+    }
+
+    const matched: string[] = [];
+    let cursor = startDate;
+    let safetyDays = 0;
+    while (cursor <= endDate && safetyDays < 105) {
+      if (allowed.has(getUtcDayOfWeek(cursor))) {
+        matched.push(cursor);
+      }
+      cursor = shiftDateISO(cursor, 1);
+      safetyDays += 1;
+    }
+
+    if (safetyDays >= 105 && cursor <= endDate) {
+      return {
+        previewDates: matched,
+        rangeError: 'Date span exceeds the 100-day limit per apply action.',
+      };
+    }
+    if (matched.length > 100) {
+      return {
+        previewDates: matched,
+        rangeError: 'Cannot apply to more than 100 days at once.',
+      };
+    }
+    return { previewDates: matched, rangeError: null as string | null };
+  }, [spanMode, startDate, endDate, weekdays, pickedDates]);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!template || rangeError || previewDates.length === 0 || submitting) return;
+    setSubmitting(true);
+    try {
+      await applyTemplateBatch({
+        templateId: template.id,
+        ...(spanMode === 'specific'
+          ? { dates: previewDates }
+          : { startDate, endDate, weekdays }),
+        replaceExisting: conflictPolicy === 'replace',
+        skipPopulatedDays: conflictPolicy === 'skip',
+      });
+      onOpenChange(false);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const firstPreview = previewDates[0];
+  const lastPreview = previewDates[previewDates.length - 1];
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <CalendarRange className="h-4 w-4 text-primary" />
+            Multi-Date Template Deployment
+          </DialogTitle>
+          <DialogDescription>
+            Deploy <span className="font-medium text-foreground">{template?.name}</span> ({templateBlockCount} blocks/day) across weeks, 1 month, 3 months, or custom dates.
+          </DialogDescription>
+        </DialogHeader>
+
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div className="max-h-[65vh] overflow-y-auto pr-1 space-y-4">
+            {/* Horizon Presets */}
+            <div className="space-y-2">
+              <label className="text-xs font-medium uppercase tracking-[0.1em] text-muted-foreground">
+                Horizon / Date Mode
+              </label>
+              <div className="grid grid-cols-3 gap-2">
+                {[
+                  { id: '1w', label: '1 Week (7d)' },
+                  { id: '2w', label: '2 Weeks (14d)' },
+                  { id: '1m', label: '1 Month (30d)' },
+                  { id: '3m', label: '3 Months (90d)' },
+                  { id: 'custom', label: 'Custom Range' },
+                  { id: 'specific', label: 'Pick Dates' },
+                ].map((opt) => {
+                  const active = spanMode === opt.id;
+                  return (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      onClick={() => selectSpanPreset(opt.id as SpanMode)}
+                      className={`px-2.5 py-2 rounded-lg border text-xs font-medium transition-colors cursor-pointer ${
+                        active
+                          ? 'bg-primary text-primary-foreground border-primary'
+                          : 'bg-surface border-border text-muted-foreground hover:text-foreground hover:border-primary/50'
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {spanMode === 'specific' ? (
+              <div className="space-y-2.5">
+                <label className="text-xs font-medium text-muted-foreground">
+                  Select Individual Dates ({pickedDates.length}/100)
+                </label>
+                <div className="flex items-center gap-2">
+                  <Input
+                    type="date"
+                    value={specificDateInput}
+                    onChange={(e) => setSpecificDateInput(e.target.value)}
+                    className="num"
+                  />
+                  <Button type="button" variant="outline" onClick={handleAddPickedDate}>
+                    <Plus className="h-4 w-4" /> Add Date
+                  </Button>
+                </div>
+                {pickedDates.length > 0 ? (
+                  <div className="flex flex-wrap gap-1.5 pt-1">
+                    {pickedDates.map((d) => (
+                      <span
+                        key={d}
+                        className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2 py-1 text-xs num text-foreground"
+                      >
+                        {d}
+                        <button
+                          type="button"
+                          onClick={() => setPickedDates((prev) => prev.filter((item) => item !== d))}
+                          className="text-muted-foreground hover:text-destructive cursor-pointer"
+                          aria-label={`Remove ${d}`}
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-xs text-muted-foreground">Add one or more dates above.</p>
+                )}
+              </div>
+            ) : (
+              <>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-medium text-muted-foreground">Start Date</label>
+                    <Input
+                      type="date"
+                      value={startDate}
+                      onChange={(e) => handleStartDateChange(e.target.value)}
+                      className="num"
+                      required
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-medium text-muted-foreground">End Date</label>
+                    <Input
+                      type="date"
+                      value={endDate}
+                      onChange={(e) => {
+                        setSpanMode('custom');
+                        if (e.target.value) setEndDate(e.target.value);
+                      }}
+                      className="num"
+                      required
+                    />
+                  </div>
+                </div>
+
+                {/* Weekday Filter */}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <label className="text-xs font-medium uppercase tracking-[0.1em] text-muted-foreground">
+                      Active Weekdays
+                    </label>
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => setWeekdays([0, 1, 2, 3, 4, 5, 6])}
+                        className="text-[11px] text-primary hover:underline cursor-pointer"
+                      >
+                        Every Day
+                      </button>
+                      <span className="text-border">·</span>
+                      <button
+                        type="button"
+                        onClick={() => setWeekdays([1, 2, 3, 4, 5])}
+                        className="text-[11px] text-primary hover:underline cursor-pointer"
+                      >
+                        Weekdays
+                      </button>
+                      <span className="text-border">·</span>
+                      <button
+                        type="button"
+                        onClick={() => setWeekdays([0, 6])}
+                        className="text-[11px] text-primary hover:underline cursor-pointer"
+                      >
+                        Weekends
+                      </button>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-7 gap-1.5">
+                    {WEEKDAY_OPTIONS.map((day) => {
+                      const active = weekdays.includes(day.value);
+                      return (
+                        <button
+                          key={day.value}
+                          type="button"
+                          onClick={() => toggleWeekday(day.value)}
+                          className={`py-1.5 rounded-lg border text-xs font-medium transition-colors cursor-pointer ${
+                            active
+                              ? 'bg-primary/20 border-primary text-foreground'
+                              : 'bg-surface border-border text-muted-foreground hover:text-foreground'
+                          }`}
+                        >
+                          {day.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              </>
+            )}
+
+            {/* Conflict Policy */}
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium uppercase tracking-[0.1em] text-muted-foreground">
+                Existing Blocks Behavior
+              </label>
+              <Select
+                value={conflictPolicy}
+                onValueChange={(v) => setConflictPolicy(v as ConflictPolicy)}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="replace">Replace existing blocks on these days</SelectItem>
+                  <SelectItem value="skip">Skip days that already have blocks</SelectItem>
+                  <SelectItem value="append">Append blocks alongside existing schedule</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            {/* Deployment Preview */}
+            <div className="rounded-xl border border-border bg-surface p-3 space-y-1">
+              {rangeError ? (
+                <p className="text-xs font-medium text-destructive">{rangeError}</p>
+              ) : (
+                <>
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="text-muted-foreground">Target Deployment</span>
+                    <span className="num font-semibold text-foreground">
+                      {previewDates.length} day{previewDates.length === 1 ? '' : 's'} ·{' '}
+                      {previewDates.length * templateBlockCount} blocks
+                    </span>
+                  </div>
+                  {firstPreview && lastPreview && (
+                    <p className="text-[11px] text-muted-foreground num">
+                      {firstPreview === lastPreview
+                        ? `Date: ${firstPreview}`
+                        : `Span: ${firstPreview} → ${lastPreview}`}
+                    </p>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+              Cancel
+            </Button>
+            <Button
+              type="submit"
+              disabled={submitting || Boolean(rangeError) || previewDates.length === 0}
+            >
+              {submitting
+                ? 'Deploying...'
+                : `Apply to ${previewDates.length} Day${previewDates.length === 1 ? '' : 's'}`}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
 
 export function TemplateEditorSheet({
   open,
@@ -208,6 +605,8 @@ export function CustomTemplates({ selectedDate }: { selectedDate: string }) {
   const [editorOpen, setEditorOpen] = useState(false);
   const [editingTemplate, setEditingTemplate] = useState<ScheduleTemplate | null>(null);
   const [seedBlocks, setSeedBlocks] = useState<TemplateBlockItem[] | undefined>(undefined);
+  const [multiDateOpen, setMultiDateOpen] = useState(false);
+  const [multiDateTemplate, setMultiDateTemplate] = useState<ScheduleTemplate | null>(null);
 
   if (!workspace) return null;
 
@@ -288,13 +687,25 @@ export function CustomTemplates({ selectedDate }: { selectedDate: string }) {
                   <p className="text-xs text-muted-foreground line-clamp-2">{tpl.description}</p>
                 )}
               </div>
-              <div className="flex items-center justify-between gap-2 pt-2 border-t border-border/60">
-                <Button
-                  size="sm"
-                  onClick={() => applyTemplate(selectedDate, tpl.id, true)}
-                >
-                  Apply to {selectedDate}
-                </Button>
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-border/60">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <Button
+                    size="sm"
+                    onClick={() => applyTemplate(selectedDate, tpl.id, true)}
+                  >
+                    Apply to {selectedDate}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      setMultiDateTemplate(tpl);
+                      setMultiDateOpen(true);
+                    }}
+                  >
+                    <CalendarRange className="h-3.5 w-3.5" /> Multi-Date
+                  </Button>
+                </div>
                 <div className="flex items-center gap-1">
                   <Button
                     variant="ghost"
@@ -353,6 +764,13 @@ export function CustomTemplates({ selectedDate }: { selectedDate: string }) {
         onOpenChange={setEditorOpen}
         initialTemplate={editingTemplate}
         seedBlocks={seedBlocks}
+      />
+
+      <MultiDateApplyDialog
+        open={multiDateOpen}
+        onOpenChange={setMultiDateOpen}
+        template={multiDateTemplate}
+        defaultStartDate={selectedDate}
       />
     </div>
   );

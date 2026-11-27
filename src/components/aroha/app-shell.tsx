@@ -106,7 +106,7 @@ export function AppShell({
               <span>AROHA</span>
             </Link>
             <span className="num text-xs text-primary font-semibold">
-              Lv.{workspace?.xp.level ?? 1}
+              Lv.{workspace?.xp.level ?? 0}
             </span>
           </div>
 
@@ -220,7 +220,7 @@ export function AppShell({
                         <span>AROHA</span>
                       </span>
                       <span className="num text-xs text-primary font-semibold">
-                        {workspace?.xp.rank ?? 'Novice'} · Lv.{workspace?.xp.level ?? 1}
+                        {workspace?.xp.rank ?? 'Novice'} · Lv.{workspace?.xp.level ?? 0}
                       </span>
                     </SheetTitle>
                   </SheetHeader>

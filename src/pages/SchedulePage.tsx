@@ -29,6 +29,7 @@ const PRIORITY_TEXT: Record<ScheduleBlock['priority'], string> = {
 export function SchedulePage() {
   const { workspace, createBlock, updateBlock, deleteBlock } = useWorkspace();
   const [selectedDate, setSelectedDate] = useState(() => workspace?.today || new Date().toISOString().slice(0, 10));
+  const [activeTab, setActiveTab] = useState<'timeline' | 'templates'>('timeline');
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingBlock, setEditingBlock] = useState<ScheduleBlock | null>(null);
 
@@ -158,7 +159,7 @@ export function SchedulePage() {
         }
       />
 
-      <Tabs defaultValue="timeline">
+      <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as 'timeline' | 'templates')}>
         <TabsList>
           <TabsTrigger value="timeline">Day Timeline</TabsTrigger>
           <TabsTrigger value="templates">Templates ({workspace.templates.length})</TabsTrigger>
@@ -170,10 +171,13 @@ export function SchedulePage() {
               <Calendar className="h-8 w-8 mx-auto text-muted-foreground" />
               <h3 className="text-base font-semibold">No blocks scheduled for {selectedDate}</h3>
               <p className="text-sm text-muted-foreground max-w-md mx-auto">
-                Add custom time blocks or apply Monk Mode from the Templates tab to structure this day.
+                Add custom time blocks or apply a template across single days, weeks, or months from the Templates tab.
               </p>
-              <div className="flex justify-center gap-2 pt-2">
+              <div className="flex flex-wrap justify-center gap-2 pt-2">
                 <Button onClick={openCreate}>Add Time Block</Button>
+                <Button variant="outline" onClick={() => setActiveTab('templates')}>
+                  Apply Template
+                </Button>
               </div>
             </div>
           ) : (

@@ -129,41 +129,52 @@ export function HomePage() {
             }
           />
           <div className="divide-y divide-border/60">
-            {workspace.habits.map((habit) => {
-              const checked = todayCheckinSet.has(habit.id);
-              return (
-                <button
-                  key={habit.id}
-                  type="button"
-                  onClick={() => handleToggleHabit(habit.id)}
-                  className="w-full py-3 flex items-center justify-between gap-3 text-left hover:bg-accent/35 px-2 -mx-2 rounded-xl transition-colors cursor-pointer"
-                >
-                  <div className="flex items-center gap-3 min-w-0">
-                    <span
-                      className={`h-6 w-6 rounded-lg border flex items-center justify-center shrink-0 transition-colors ${
-                        checked
-                          ? 'bg-success border-success text-background'
-                          : 'border-border bg-surface text-transparent'
-                      }`}
-                    >
-                      <Check className="h-3.5 w-3.5 stroke-[2.5]" />
-                    </span>
-                    <div className="min-w-0">
-                      <p className={`text-sm font-medium truncate ${checked ? 'line-through text-muted-foreground' : 'text-foreground'}`}>
-                        {habit.title}
-                      </p>
-                      <p className="text-xs text-muted-foreground">
-                        Target: <span className="num">{habit.targetQuantity}</span> {habit.unit} · <span className="capitalize">{habit.cadence}</span>
-                      </p>
+            {workspace.habits.length === 0 ? (
+              <div className="py-6 text-center space-y-3">
+                <p className="text-sm text-muted-foreground">
+                  No habits active yet. Create your first daily protocol to start earning XP.
+                </p>
+                <Button asChild size="sm" variant="outline">
+                  <Link to="/habits">Create First Habit</Link>
+                </Button>
+              </div>
+            ) : (
+              workspace.habits.map((habit) => {
+                const checked = todayCheckinSet.has(habit.id);
+                return (
+                  <button
+                    key={habit.id}
+                    type="button"
+                    onClick={() => handleToggleHabit(habit.id)}
+                    className="w-full py-3 flex items-center justify-between gap-3 text-left hover:bg-accent/35 px-2 -mx-2 rounded-xl transition-colors cursor-pointer"
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      <span
+                        className={`h-6 w-6 rounded-lg border flex items-center justify-center shrink-0 transition-colors ${
+                          checked
+                            ? 'bg-success border-success text-background'
+                            : 'border-border bg-surface text-transparent'
+                        }`}
+                      >
+                        <Check className="h-3.5 w-3.5 stroke-[2.5]" />
+                      </span>
+                      <div className="min-w-0">
+                        <p className={`text-sm font-medium truncate ${checked ? 'line-through text-muted-foreground' : 'text-foreground'}`}>
+                          {habit.title}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          Target: <span className="num">{habit.targetQuantity}</span> {habit.unit} · <span className="capitalize">{habit.cadence}</span>
+                        </p>
+                      </div>
                     </div>
-                  </div>
-                  <div className="shrink-0 flex items-center gap-1 text-xs text-warning">
-                    <Flame className="h-3.5 w-3.5" />
-                    <span className="num font-semibold">{habit.currentStreak}d</span>
-                  </div>
-                </button>
-              );
-            })}
+                    <div className="shrink-0 flex items-center gap-1 text-xs text-warning">
+                      <Flame className="h-3.5 w-3.5" />
+                      <span className="num font-semibold">{habit.currentStreak}d</span>
+                    </div>
+                  </button>
+                );
+              })
+            )}
           </div>
         </div>
 
